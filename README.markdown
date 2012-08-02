@@ -17,6 +17,14 @@ Roadmap includes the following goals:
 
 ## How to install?
 
-It's very easy. See the [project homepage](http://slic3r.org/)
-for instructions and links to the precompiled packages that you can just
-download and run, with no dependencies required.
+It's very easy. Just coby the files into your arduino sketchfolder and wire your system.
+
+## Wich hardware is used?
+
+Currently are different parts used
+
+* Arduino Uno
+* Adafruit motorshield + AFmotor library
+* 200 Rev Stepper (Pololu, 10V, 500mA)
+* terminal switches - connected to D2/D3
+* MLX90614 IR thermometer
