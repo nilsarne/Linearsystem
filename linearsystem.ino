@@ -2,16 +2,20 @@
 #include <i2cmaster.h>
 
 //================= Variablen =================
-
 #define MOTORMODE DOUBLE
 
 int button_left = 2;
 int button_right = 3;
 long position_current = 0; //position in steps
+long position_mm = position_current/200*3;
 long position_left = 0;
-long position_right = 0;
+long position_right = 46000;
 int i;
 int choose;
+int measuresteps = 20;
+
+char data[8];
+unsigned long Zeit;
 
 int dev = 0x5A<<1;
 int data_low = 0;
@@ -19,28 +23,28 @@ int data_high = 0;
 int pec = 0;
 double tempFactor = 0.02; // 0.02 degrees per LSB (measurement resolution of the MLX90614) 
 //lsb == least significant bit
-double tempData = 0x0000; // zero out the data
+double tempdata = 0x0000; // zero out the data
 int frac; // data past the decimal point
 
 boolean button_left_pressed = false;
 boolean button_right_pressed = false;
 
-
-
 //init motor
 AF_Stepper motor(200, 2);
 
 //================= Subprogramme =================
-void drive(int x, char dir){
-  int j;
+void drive(double x, char dir){
+  double j;
   for(j=1;j<=x;j++){
     if(dir == 'l'){
       motor.step(1, BACKWARD, MOTORMODE );
       position_current--;
+      position_mm = position_current*0.015;
     }  
     else if (dir == 'r'){
       motor.step(1, FORWARD, MOTORMODE );
       position_current++;
+      position_mm = position_current*0.015;
     }
     else {
       Serial.println("EROOR - Wrong Direction");
@@ -90,29 +94,29 @@ boolean check_switches(){
 //-----------------------------
 void check_limit(){
   Serial.println("checking limits");
-
   do {
     drive(1,'l');
   } 
   while (digitalRead(button_left) == LOW);
   position_current = 0;
-
+  motor.step(200, FORWARD, MOTORMODE );
+  position_current+=200;  
   do {
     drive(1,'r');
   }
   while (digitalRead(button_right) == LOW);
   position_right = position_current;
-
+  motor.step(200, BACKWARD, MOTORMODE );
+  position_current-=200;
   Serial.print("right limit: ");  
   Serial.print(position_right); 
   Serial.println(" steps");
 }
 
 //-----------------------------
-float read_temp(){
+float read_object_temp(){
   i2c_start_wait(dev+I2C_WRITE);
   i2c_write(0x07);
-
   // read
   i2c_rep_start(dev+I2C_READ);
   data_low = i2c_readAck(); //Read 1 byte and then send ack
@@ -120,40 +124,75 @@ float read_temp(){
   pec = i2c_readNak();
   i2c_stop();
 
-  tempData = (double)(((data_high & 0x007F) << 8) + data_low);
-  tempData = (tempData * tempFactor)-0.01;  //tempData to kelvin conversation
-
-  float celcius = tempData - 273.15;  // kelvin to celsius
+  tempdata = (double)(((data_high & 0x007F) << 8) + data_low);
+  tempdata = (tempdata * tempFactor)-0.01;  //tempdata to kelvin conversation
+  float celcius = tempdata - 273.15;  // kelvin to celsius
   //  Serial.print("Celcius: ");  Serial.println(celcius);
   return celcius;
 }
 
 //-----------------------------
-void measure(){
-  double measure_step = (position_right-2000)/20; //20 Messungen auf der Strecke 
+float read_ambient_temp(){
+  i2c_start_wait(dev+I2C_WRITE);
+  i2c_write(0x06);
+  // read
+  i2c_rep_start(dev+I2C_READ);
+  data_low = i2c_readAck(); //Read 1 byte and then send ack
+  data_high = i2c_readAck(); //Read 1 byte and then send ack
+  pec = i2c_readNak();
+  i2c_stop();
 
-  gotoposition(position_right-1000); //1,5cm rechts vom linken schlater - nullpunkt für messung
-  for(i=1;i<=20;i++){
+  tempdata = (double)(((data_high & 0x007F) << 8) + data_low);
+  tempdata = (tempdata * tempFactor)-0.01;  //tempdata to kelvin conversation
+  float celcius = tempdata - 273.15;  // kelvin to celsius
+  //  Serial.print("Celcius: ");  Serial.println(celcius);
+  return celcius;
+}
+//-----------------------------
+void measure(){
+  double measure_step = (position_right-2000)/measuresteps; //xx Messungen auf der Strecke 
+
+  gotoposition(position_right-1000); //1,5cm rechts vom linken schlater - nullpunkt fuer messung
+  for(i=1;i<=measuresteps;i++){
     drive(measure_step,'l');
     Serial.print("Messung: "); 
     Serial.print(i);
-    Serial.print("; Temperatur: ");  
-    Serial.println(read_temp());
+    Serial.print("; Position: "); 
+    Serial.print(position_mm); 
+    Serial.print("mm | Objekttemperatur: ");  
+    Serial.print(read_object_temp());
+    Serial.print("; Sensortemperatur: ");  
+    Serial.println(read_ambient_temp());
   }
+}
 
+//-----------------------------
+void just_measure(){
+  i=1;
+  Serial.println("Press '0' for stopping measure.");
+  do{
+    Serial.print("Messung: "); 
+    Serial.print(i);
+    Serial.print("; Objekttemperatur: ");  
+    Serial.print(read_object_temp());
+    Serial.print("; Sensortemperatur: ");  
+    Serial.println(read_ambient_temp());
+    i++;
+    delay(1000);
+  } 
+  while (Serial.read()!='0');
 }
 
 //-----------------------------
 void about(){
 
-  Serial.println("Welcome to the automatic IR temperatur measuring");
-  delay(100);
-  Serial.println("by Nils-Arne Pohlanndt / 934053");
-  delay(100);
   Serial.println("");
-  delay(100);
+  Serial.println("");
+  Serial.println("Welcome to the automatic IR temperatur measuring");
+  Serial.println("by Nils-Arne Pohlanndt / 934053");
+  Serial.println("Bergische Universitaet Wuppertal");
+  Serial.println("");
   Serial.println("This measurement device was developed for my bachelor thesis.");
-  delay(100);
   Serial.println("Please make sure that the sledge can move freely.");
   Serial.println("");
   Serial.println("");
@@ -181,64 +220,79 @@ void setup(){
 
 //================= LOOP =================
 void loop(){
+  Serial.println("");
+  Serial.println(" ==================================");
+  Serial.println("");
   Serial.println("Please choose working mode:");
   Serial.println("");
   Serial.println("1: Calibrating sledge");
   Serial.println("2: Measure temperature across the whole lenght");
   Serial.println("3: Go to position");
-  Serial.println("4: ");
+  Serial.println("4: Measure temperature without moving");
   Serial.println("5: About");
-
+  Serial.println("6: Settings");
+  Serial.println("");
 
   do {
     if (Serial.available() > 0) {
       choose = int(Serial.read())-48;
     }
-    if (choose == 1 || choose == 2 || choose == 3 || choose == 4 || choose == 5 )
+    if (choose == 1 || choose == 2 || choose == 3 || choose == 4 || choose == 5 || choose == 6)
       break;
-
   } 
-  while (choose != 1 || choose != 2 || choose != 3 || choose != 4 || choose != 5 );
-
+  while (choose != 1 || choose != 2 || choose != 3 || choose != 4 || choose != 5 || choose != 6 );
 
   switch (choose) {
   case 1:
     check_limit();
     break;
   case 2:
-    Serial.println("choose: 2");
+    measure();
     break;
   case 3:
-    Serial.println("choose: 3");
+    Serial.println("please enter position. each digit seperat ");
+    do { // Wenn Daten verfuegbar Zeichen in data schreiben bis 7 Zeichen erreicht oder 10 Sekunden Warten nach dem ersten uebertragenen byte
+      if (Serial.available()) {
+        data[i] = Serial.read();
+        Serial.print(data[i]);
+        i++;
+      }    
+      if(i<1)Zeit = millis();
+    } 
+    while (i<7&&(millis()-Zeit) < 3000);
+    data[i] = 0;  // Abschliessende Null fuer gueltigen String
+    i=0;
+    Serial.println("");  
+    gotoposition(atof(data));
     break;
   case 4:
-    Serial.println("choose: 4");
+    just_measure();
     break;
   case 5:
     about();
     break;
+  case 6:
+    Serial.println("===== Settings =====");
+    Serial.println("Measuresteps across lenght: ");
+    Serial.println(measuresteps);
+    Serial.println("Please enter new value:");
+    do { // Wenn Daten verfuegbar Zeichen in data schreiben bis 7 Zeichen erreicht oder 10 Sekunden Warten nach dem ersten uebertragenen byte
+      if (Serial.available()) {
+        data[i] = Serial.read();
+        Serial.print(data[i]);
+        i++;
+      }    
+      if(i<1)Zeit = millis();
+    } 
+    while (i<7&&(millis()-Zeit) < 3000);
+    data[i] = 0;  // Abschliessende Null fuer gueltigen String
+    i=0;
+    measuresteps=atof(data);
+    Serial.println("");  
   default:
     break;
   }
   choose = 0;  //resetting chooser -> no looping
-  /*
-  check_limit();
-   delay(500);
-   measure();
-   gotoposition(position_right/2);
-   delay(5000);
-   */
 }
-
-
-
-
-
-
-
-
-
-
-
 
 
