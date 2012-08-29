@@ -1,18 +1,44 @@
 #include <AFMotor.h>
 #include <i2cmaster.h>
+#include <EEPROM.h>
 
 //================= Variablen =================
 #define MOTORMODE DOUBLE
 
+// ID of the settings block
+#define CONFIG_VERSION "ls3"
+// Tell it where to store your config data in EEPROM
+#define CONFIG_START 32
+
+//================= settings =================
+//settings code via http://arduino.cc/playground/Code/EEPROMLoadAndSaveSettings
+struct StoreStruct {
+  // The variables of your settings
+  long position_current;
+  long position_left;
+  long position_right;
+  int measuresteps;
+  // This is for mere detection if they are your settings
+  char version_of_program[4]; // it is the last variable of the struct
+  // so when settings are saved, they will only be validated if
+  // they are stored completely.
+} 
+settings = {
+  // The default values
+  0,
+  0,
+  45000,
+  20,
+  CONFIG_VERSION
+};
+
 int button_left = 2;
 int button_right = 3;
-long position_current = 0; //position in steps
-long position_mm = position_current/200*3;
-long position_left = 0;
-long position_right = 46000;
+
+long position_mm = settings.position_current/200*3;
+
 int i;
 int choose;
-int measuresteps = 20;
 
 char data[8];
 unsigned long Zeit;
@@ -29,7 +55,37 @@ int frac; // data past the decimal point
 boolean button_left_pressed = false;
 boolean button_right_pressed = false;
 
-//init motor
+void loadConfig() {
+  // To make sure there are settings, and they are YOURS!
+  // If nothing is found it will use the default settings.
+  if (//EEPROM.read(CONFIG_START + sizeof(settings) - 1) == settings.version_of_program[3] // this is '\0'
+  EEPROM.read(CONFIG_START + sizeof(settings) - 2) == settings.version_of_program[2] &&
+    EEPROM.read(CONFIG_START + sizeof(settings) - 3) == settings.version_of_program[1] &&
+    EEPROM.read(CONFIG_START + sizeof(settings) - 4) == settings.version_of_program[0])
+  { // reads settings from EEPROM
+    for (unsigned int t=0; t<sizeof(settings); t++)
+      *((char*)&settings + t) = EEPROM.read(CONFIG_START + t);
+  } 
+  else {
+    // settings aren't valid! will overwrite with default settings
+    saveConfig();
+  }
+}
+
+void saveConfig() {
+  for (unsigned int t=0; t<sizeof(settings); t++)
+  { // writes to EEPROM
+    EEPROM.write(CONFIG_START + t, *((char*)&settings + t));
+    // and verifies the data
+    if (EEPROM.read(CONFIG_START + t) != *((char*)&settings + t))
+    {
+      // error writing to EEPROM
+    }
+  }
+}
+
+
+//================= init motor =================
 AF_Stepper motor(200, 2);
 
 //================= Subprogramme =================
@@ -38,13 +94,13 @@ void drive(double x, char dir){
   for(j=1;j<=x;j++){
     if(dir == 'l'){
       motor.step(1, BACKWARD, MOTORMODE );
-      position_current--;
-      position_mm = position_current*0.015;
+      settings.position_current--;
+      position_mm = settings.position_current*0.015;
     }  
     else if (dir == 'r'){
       motor.step(1, FORWARD, MOTORMODE );
-      position_current++;
-      position_mm = position_current*0.015;
+      settings.position_current++;
+      position_mm = settings.position_current*0.015;
     }
     else {
       Serial.println("EROOR - Wrong Direction");
@@ -57,18 +113,20 @@ void drive(double x, char dir){
 
 //-----------------------------
 void gotoposition(double x){
-  if (x > position_right)
+  if (x > settings.position_right)
     Serial.println("too much movement to the right");
+  else if (x < settings.position_left)
+    Serial.println("too much movement to the left");
 
-  else if((position_current - x)<0){
-    Serial.print((position_current - x)*-1);
+  else if((settings.position_current - x)<0){
+    Serial.print((settings.position_current - x)*-1);
     Serial.println(" steps moving to the right");
-    drive((position_current - x)*-1,'r');
+    drive((settings.position_current - x)*-1,'r');
   }
-  else if((position_current - x)>=0){
-    Serial.print(position_current - x);
-    Serial.println(" stepsmoving to the left");
-    drive((position_current - x),'l');
+  else if((settings.position_current - x)>=0){
+    Serial.print(settings.position_current - x);
+    Serial.println(" steps moving to the left");
+    drive((settings.position_current - x),'l');
   }
 }
 
@@ -98,18 +156,18 @@ void check_limit(){
     drive(1,'l');
   } 
   while (digitalRead(button_left) == LOW);
-  position_current = 0;
+  settings.position_current = 0;
   motor.step(200, FORWARD, MOTORMODE );
-  position_current+=200;  
+  settings.position_current+=200;  
   do {
     drive(1,'r');
   }
   while (digitalRead(button_right) == LOW);
-  position_right = position_current;
+  settings.position_right = settings.position_current;
   motor.step(200, BACKWARD, MOTORMODE );
-  position_current-=200;
+  settings.position_current-=200;
   Serial.print("right limit: ");  
-  Serial.print(position_right); 
+  Serial.print(settings.position_right); 
   Serial.println(" steps");
 }
 
@@ -150,16 +208,16 @@ float read_ambient_temp(){
 }
 //-----------------------------
 void measure(){
-  double measure_step = (position_right-2000)/measuresteps; //xx Messungen auf der Strecke 
+  double measure_step = (settings.position_right-2000)/settings.measuresteps; //xx Messungen auf der Strecke 
 
-  gotoposition(position_right-1000); //1,5cm rechts vom linken schlater - nullpunkt fuer messung
-  for(i=1;i<=measuresteps;i++){
+  gotoposition(settings.position_right-1000); //1,5cm rechts vom linken schlater - nullpunkt fuer messung
+  for(i=1;i<=settings.measuresteps;i++){
     drive(measure_step,'l');
     Serial.print("Messung: "); 
     Serial.print(i);
     Serial.print("; Position: "); 
     Serial.print(position_mm); 
-    Serial.print("mm | Objekttemperatur: ");  
+    Serial.print("mm; Objekttemperatur: ");  
     Serial.print(read_object_temp());
     Serial.print("; Sensortemperatur: ");  
     Serial.println(read_ambient_temp());
@@ -201,17 +259,22 @@ void about(){
 
 //================= SETUP =================
 void setup(){
-  Serial.begin(9600);           // set up Serial library at 9600 bps
+  Serial.begin(9600); 
+  while (!Serial);  // set up Serial library at 9600 bps
   Serial.println("Starting setup");
 
   //init ir thermometer
   i2c_init(); //Initialise the i2c bus
-  PORTC = (1 << PORTC4) | (1 << PORTC5);//enable pullups
+  //PORTC = (1 << PORTC4) | (1 << PORTC5);//enable pullups
 
   pinMode(button_left, INPUT);
   pinMode(button_right, INPUT);
-  motor.setSpeed(200);
-  motor.release();
+  loadConfig();
+  settings.position_current = settings.position_current;
+  Serial.print("Position loaded: ");
+  Serial.println(settings.position_current);
+  motor.setSpeed(195);
+  motor.release();  
   Serial.println("setup completed");
   delay(100);
   Serial.println("");
@@ -220,11 +283,24 @@ void setup(){
 
 //================= LOOP =================
 void loop(){
+
+  //store position
+  saveConfig();
+  /*    //Data verification
+   loadConfig();
+   if (position_current != settings.position_current){
+   Serial.println("ERROR writing settings");
+   } 
+   else Serial.println("Writing settings --> OK");
+   Serial.print("Position: ");
+   
+   */
+
   Serial.println("");
   Serial.println(" ==================================");
   Serial.println("");
   Serial.println("Please choose working mode:");
-  Serial.println("");
+  Serial.println("");  
   Serial.println("1: Calibrating sledge");
   Serial.println("2: Measure temperature across the whole lenght");
   Serial.println("3: Go to position");
@@ -273,8 +349,8 @@ void loop(){
     break;
   case 6:
     Serial.println("===== Settings =====");
-    Serial.println("Measuresteps across lenght: ");
-    Serial.println(measuresteps);
+    Serial.println("measuresteps across lenght: ");
+    Serial.println(settings.measuresteps);
     Serial.println("Please enter new value:");
     do { // Wenn Daten verfuegbar Zeichen in data schreiben bis 7 Zeichen erreicht oder 10 Sekunden Warten nach dem ersten uebertragenen byte
       if (Serial.available()) {
@@ -287,12 +363,12 @@ void loop(){
     while (i<7&&(millis()-Zeit) < 3000);
     data[i] = 0;  // Abschliessende Null fuer gueltigen String
     i=0;
-    measuresteps=atof(data);
+    settings.measuresteps=atof(data);
+    saveConfig();
     Serial.println("");  
   default:
     break;
   }
   choose = 0;  //resetting chooser -> no looping
 }
-
 
