@@ -6,7 +6,7 @@
 #define MOTORMODE DOUBLE
 
 // ID of the settings block
-#define CONFIG_VERSION "ls3"
+#define CONFIG_VERSION "ls4"
 // Tell it where to store your config data in EEPROM
 #define CONFIG_START 32
 
@@ -18,6 +18,7 @@ struct StoreStruct {
   long position_left;
   long position_right;
   int measuresteps;
+  int measure_count;
   // This is for mere detection if they are your settings
   char version_of_program[4]; // it is the last variable of the struct
   // so when settings are saved, they will only be validated if
@@ -29,6 +30,7 @@ settings = {
   0,
   45000,
   20,
+  1,
   CONFIG_VERSION
 };
 
@@ -38,6 +40,7 @@ int button_right = 3;
 long position_mm = settings.position_current/200*3;
 
 int i;
+int k;
 int choose;
 
 char data[8];
@@ -215,9 +218,9 @@ void measure(){
     drive(measure_step,'l');
     Serial.print("Messung: "); 
     Serial.print(i);
-    Serial.print("; Position: "); 
+    Serial.print("; Position [mm]: "); 
     Serial.print(position_mm); 
-    Serial.print("mm; Objekttemperatur: ");  
+    Serial.print("; Objekttemperatur: ");  
     Serial.print(read_object_temp());
     Serial.print("; Sensortemperatur: ");  
     Serial.println(read_ambient_temp());
@@ -253,10 +256,67 @@ void about(){
   Serial.println("This measurement device was developed for my bachelor thesis.");
   Serial.println("Please make sure that the sledge can move freely.");
   Serial.println("");
+  Serial.print("Currently used storage version: ");
+  Serial.println(CONFIG_VERSION);
+  Serial.println("");
   Serial.println("");
   Serial.println("");
 }
 
+void set_settings(){
+  Serial.println("===== Settings =====");
+  Serial.println("1: Set number of measuresteps");
+  Serial.println("2: number of repeating measurements");
+  Serial.println(" ==================================");
+  Serial.println("");
+
+  do {
+    if (Serial.available() > 0) {
+      choose = int(Serial.read())-48;
+    }
+    if (choose == 1 || choose == 2)
+      break;
+  } 
+  while (choose != 1 || choose != 2);
+
+  switch (choose) {
+  case 1:
+    Serial.println("measuresteps across lenght: ");
+    Serial.println(settings.measuresteps);
+    Serial.println("Please enter new value:");
+    do { // Wenn Daten verfuegbar Zeichen in data schreiben bis 7 Zeichen erreicht oder 10 Sekunden Warten nach dem ersten uebertragenen byte
+      if (Serial.available()) {
+        data[i] = Serial.read();
+        Serial.print(data[i]);
+        i++;
+      }    
+      if(i<1)Zeit = millis();
+    } 
+    while (i<7&&(millis()-Zeit) < 3000);
+    data[i] = 0;  // Abschliessende Null fuer gueltigen String
+    i=0;
+    settings.measuresteps=atof(data);
+    Serial.println("");  
+    break;
+  case 2:
+    Serial.println("repeating measurements: ");
+    Serial.println(settings.measure_count);
+    Serial.println("Please enter new value:");
+    do {
+      if (Serial.available()) {
+        data[i] = Serial.read();
+        Serial.print(data[i]);
+        i++;
+      }    
+      if(i<1)Zeit = millis();
+    } 
+    while (i<7&&(millis()-Zeit) < 3000);
+    data[i] = 0;  // Abschliessende Null fuer gueltigen String
+    i=0;
+    settings.measure_count=atof(data);
+    Serial.println("");  
+  }
+}
 //================= SETUP =================
 void setup(){
   Serial.begin(9600); 
@@ -284,17 +344,8 @@ void setup(){
 //================= LOOP =================
 void loop(){
 
-  //store position
+  //store config data
   saveConfig();
-  /*    //Data verification
-   loadConfig();
-   if (position_current != settings.position_current){
-   Serial.println("ERROR writing settings");
-   } 
-   else Serial.println("Writing settings --> OK");
-   Serial.print("Position: ");
-   
-   */
 
   Serial.println("");
   Serial.println(" ==================================");
@@ -305,8 +356,8 @@ void loop(){
   Serial.println("2: Measure temperature across the whole lenght");
   Serial.println("3: Go to position");
   Serial.println("4: Measure temperature without moving");
-  Serial.println("5: About");
-  Serial.println("6: Settings");
+  Serial.println("5: Settings");
+  Serial.println("6: About");
   Serial.println("");
 
   do {
@@ -323,7 +374,11 @@ void loop(){
     check_limit();
     break;
   case 2:
-    measure();
+    for (k=1;k<=settings.measure_count;k++){
+      Serial.print("Messung:");
+      Serial.println(k);
+      measure();
+    }
     break;
   case 3:
     Serial.println("please enter position. each digit seperat ");
@@ -345,30 +400,19 @@ void loop(){
     just_measure();
     break;
   case 5:
-    about();
+    set_settings();
     break;
   case 6:
-    Serial.println("===== Settings =====");
-    Serial.println("measuresteps across lenght: ");
-    Serial.println(settings.measuresteps);
-    Serial.println("Please enter new value:");
-    do { // Wenn Daten verfuegbar Zeichen in data schreiben bis 7 Zeichen erreicht oder 10 Sekunden Warten nach dem ersten uebertragenen byte
-      if (Serial.available()) {
-        data[i] = Serial.read();
-        Serial.print(data[i]);
-        i++;
-      }    
-      if(i<1)Zeit = millis();
-    } 
-    while (i<7&&(millis()-Zeit) < 3000);
-    data[i] = 0;  // Abschliessende Null fuer gueltigen String
-    i=0;
-    settings.measuresteps=atof(data);
-    saveConfig();
-    Serial.println("");  
+    about();
+    break;  
   default:
     break;
   }
   choose = 0;  //resetting chooser -> no looping
+  motor.release(); 
 }
+
+
+
+
 
