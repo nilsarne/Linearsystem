@@ -6,7 +6,7 @@
 #define MOTORMODE DOUBLE
 
 // ID of the settings block
-#define CONFIG_VERSION "ls4"
+#define CONFIG_VERSION "ls5"
 // Tell it where to store your config data in EEPROM
 #define CONFIG_START 32
 
@@ -19,17 +19,16 @@ struct StoreStruct {
   long position_right;
   int measuresteps;
   int measure_count;
-  // This is for mere detection if they are your settings
-  char version_of_program[4]; // it is the last variable of the struct
-  // so when settings are saved, they will only be validated if
-  // they are stored completely.
+  float efaktor;
+
+  char version_of_program[4];
 } 
 settings = {
-  // The default values
   0,
   0,
   45000,
   20,
+  1,
   1,
   CONFIG_VERSION
 };
@@ -51,16 +50,13 @@ int data_low = 0;
 int data_high = 0;
 int pec = 0;
 double tempFactor = 0.02; // 0.02 degrees per LSB (measurement resolution of the MLX90614) 
-//lsb == least significant bit
-double tempdata = 0x0000; // zero out the data
-int frac; // data past the decimal point
+double tempdata = 0x0000;
+int frac;
 
 boolean button_left_pressed = false;
 boolean button_right_pressed = false;
 
 void loadConfig() {
-  // To make sure there are settings, and they are YOURS!
-  // If nothing is found it will use the default settings.
   if (//EEPROM.read(CONFIG_START + sizeof(settings) - 1) == settings.version_of_program[3] // this is '\0'
   EEPROM.read(CONFIG_START + sizeof(settings) - 2) == settings.version_of_program[2] &&
     EEPROM.read(CONFIG_START + sizeof(settings) - 3) == settings.version_of_program[1] &&
@@ -94,8 +90,11 @@ AF_Stepper motor(200, 2);
 //================= Subprogramme =================
 void drive(double x, char dir){
   double j;
+
   for(j=1;j<=x;j++){
-    if(dir == 'l'){
+    if (check_switches()==true)
+      break;
+    else if(dir == 'l'){
       motor.step(1, BACKWARD, MOTORMODE );
       settings.position_current--;
       position_mm = settings.position_current*0.015;
@@ -109,12 +108,81 @@ void drive(double x, char dir){
       Serial.println("EROOR - Wrong Direction");
       break; 
     }
-    if (check_switches()==true)
-      break;
   }
+  delay(10);
+}
+
+//---------------------------------------------------------------------------------------
+//Emissionswert senden von Andreas Schules
+byte calcCRC8(byte command,byte address,byte lsb,byte msb)
+{ //CRC Checksum berechnen
+  byte t[4];
+  t[0]=command;
+  t[1]=address;
+  t[2]=lsb;
+  t[3]=msb;
+  unsigned int remainderPolynomial=0;
+  int i,j;
+  for(i=0;i<4;i++)
+  {
+    remainderPolynomial=remainderPolynomial ^ ((unsigned int)t[i]*0x0100) ;
+    for(j=0;j<8;j++)
+    {
+      for(int y=0;y<16;y++)
+        if(remainderPolynomial&0x8000)
+          remainderPolynomial=(remainderPolynomial*0x02)^0x0700;//0x07 X^2+X^1+1
+        else
+          remainderPolynomial=(remainderPolynomial*0x02);
+    }
+  }
+  for(int y=0;y<16;y++)
+    return remainderPolynomial>>8;
 }
 
 //-----------------------------
+unsigned int getMLXemission()
+{
+  int dlsb,dmsb,pec;
+  int dev = 0x5A<<1;
+  i2c_init();
+  i2c_start_wait(dev+I2C_WRITE);  // set device address and write mode
+  i2c_write(0x24);                // or command read object or ambient temperature
+  i2c_rep_start(dev+I2C_READ);    // set device address and read mode
+  dlsb = i2c_readAck();       // read data lsb
+  dmsb = i2c_readAck();      // read data msb
+  pec = i2c_readNak();
+  i2c_stop();
+  return dmsb*0x100+dlsb;
+}
+
+//-----------------------------
+void setMLXemission(int e)
+{
+  int dlsb,dmsb,pec;
+  int dev = 0x5A<<1;
+  pec=calcCRC8(dev+I2C_WRITE,0x24,0x00,0x00);
+  i2c_init();
+  i2c_start_wait(dev+I2C_WRITE); 
+  i2c_write(0x24);
+  i2c_write(0x00);
+  i2c_write(0x00);
+  i2c_write(pec);
+  i2c_stop();
+  dlsb=e&0x00FF;
+  dmsb=(e>>8);
+  pec=calcCRC8(dev+I2C_WRITE,0x24,dlsb,dmsb);
+  delay(1000);
+  i2c_init();
+  i2c_start_wait(dev+I2C_WRITE); 
+  i2c_write(0x24);
+  i2c_write(dlsb);
+  i2c_write(dmsb);
+  i2c_write(pec);
+  i2c_stop();
+  delay(1000);
+}
+
+//---------------------------------------------------------------------------------------
 void gotoposition(double x){
   if (x > settings.position_right)
     Serial.println("too much movement to the right");
@@ -137,12 +205,10 @@ void gotoposition(double x){
 boolean check_switches(){
   if (digitalRead(button_left) == HIGH){
     button_left_pressed = true;
-    //Serial.println("button left pressed");
     return true;
   }
   else if (digitalRead(button_right) == HIGH){
     button_right_pressed = true;
-    //Serial.println("button right pressed");
     return true;
   }
   else {
@@ -156,14 +222,16 @@ boolean check_switches(){
 void check_limit(){
   Serial.println("checking limits");
   do {
-    drive(1,'l');
+    motor.step(1, BACKWARD, MOTORMODE );
+    settings.position_current--;
   } 
   while (digitalRead(button_left) == LOW);
   settings.position_current = 0;
   motor.step(200, FORWARD, MOTORMODE );
   settings.position_current+=200;  
   do {
-    drive(1,'r');
+    motor.step(1, FORWARD, MOTORMODE );
+    settings.position_current++;
   }
   while (digitalRead(button_right) == LOW);
   settings.position_right = settings.position_current;
@@ -178,17 +246,14 @@ void check_limit(){
 float read_object_temp(){
   i2c_start_wait(dev+I2C_WRITE);
   i2c_write(0x07);
-  // read
   i2c_rep_start(dev+I2C_READ);
   data_low = i2c_readAck(); //Read 1 byte and then send ack
   data_high = i2c_readAck(); //Read 1 byte and then send ack
   pec = i2c_readNak();
   i2c_stop();
-
   tempdata = (double)(((data_high & 0x007F) << 8) + data_low);
   tempdata = (tempdata * tempFactor)-0.01;  //tempdata to kelvin conversation
   float celcius = tempdata - 273.15;  // kelvin to celsius
-  //  Serial.print("Celcius: ");  Serial.println(celcius);
   return celcius;
 }
 
@@ -196,23 +261,19 @@ float read_object_temp(){
 float read_ambient_temp(){
   i2c_start_wait(dev+I2C_WRITE);
   i2c_write(0x06);
-  // read
   i2c_rep_start(dev+I2C_READ);
   data_low = i2c_readAck(); //Read 1 byte and then send ack
   data_high = i2c_readAck(); //Read 1 byte and then send ack
   pec = i2c_readNak();
   i2c_stop();
-
   tempdata = (double)(((data_high & 0x007F) << 8) + data_low);
   tempdata = (tempdata * tempFactor)-0.01;  //tempdata to kelvin conversation
   float celcius = tempdata - 273.15;  // kelvin to celsius
-  //  Serial.print("Celcius: ");  Serial.println(celcius);
   return celcius;
 }
 //-----------------------------
 void measure(){
   double measure_step = (settings.position_right-2000)/settings.measuresteps; //xx Messungen auf der Strecke 
-
   gotoposition(settings.position_right-1000); //1,5cm rechts vom linken schlater - nullpunkt fuer messung
   for(i=1;i<=settings.measuresteps;i++){
     drive(measure_step,'l');
@@ -221,7 +282,7 @@ void measure(){
     Serial.print("; Position [mm]: "); 
     Serial.print(position_mm); 
     Serial.print("; Objekttemperatur: ");  
-    Serial.print(read_object_temp());
+    Serial.print(read_object_temp()/settings.efaktor);
     Serial.print("; Sensortemperatur: ");  
     Serial.println(read_ambient_temp());
   }
@@ -235,7 +296,7 @@ void just_measure(){
     Serial.print("Messung: "); 
     Serial.print(i);
     Serial.print("; Objekttemperatur: ");  
-    Serial.print(read_object_temp());
+    Serial.print(read_object_temp()/settings.efaktor);
     Serial.print("; Sensortemperatur: ");  
     Serial.println(read_ambient_temp());
     i++;
@@ -246,7 +307,6 @@ void just_measure(){
 
 //-----------------------------
 void about(){
-
   Serial.println("");
   Serial.println("");
   Serial.println("Welcome to the automatic IR temperatur measuring");
@@ -263,22 +323,25 @@ void about(){
   Serial.println("");
 }
 
+//-----------------------------
 void set_settings(){
   Serial.println("===== Settings =====");
-  Serial.println("1: Set number of measuresteps");
-  Serial.println("2: number of repeating measurements");
+  Serial.print("1: Set number of measuresteps - ");
+  Serial.println(settings.measuresteps);
+  Serial.print("2: number of repeating measurements - ");
+  Serial.println(settings.measure_count);
+  Serial.print("3: emissionsfaktor - ");
+  Serial.println(settings.efaktor);
   Serial.println(" ==================================");
   Serial.println("");
-
   do {
     if (Serial.available() > 0) {
       choose = int(Serial.read())-48;
     }
-    if (choose == 1 || choose == 2)
+    if (choose == 1 || choose == 2 || choose == 3)
       break;
   } 
-  while (choose != 1 || choose != 2);
-
+  while (choose != 1 || choose != 2 || choose != 3);
   switch (choose) {
   case 1:
     Serial.println("measuresteps across lenght: ");
@@ -314,19 +377,37 @@ void set_settings(){
     data[i] = 0;  // Abschliessende Null fuer gueltigen String
     i=0;
     settings.measure_count=atof(data);
-    Serial.println("");  
+    Serial.println("");
+    break;
+  case 3:
+    Serial.println("emissionsfaktor ");
+    Serial.println(settings.efaktor);
+    Serial.println("Please enter new value: (0.01 - 1.00)");
+    do {
+      if (Serial.available()) {
+        data[i] = Serial.read();
+        Serial.print(data[i]);
+        i++;
+      }    
+      if(i<1)Zeit = millis();
+    } 
+    while (i<7&&(millis()-Zeit) < 3000);
+    data[i] = 0;
+    i=0;
+    settings.efaktor=atof(data);
+    setMLXemission(int(65535*settings.efaktor));
+    Serial.println("");
+    break;  
   }
 }
+
 //================= SETUP =================
 void setup(){
   Serial.begin(9600); 
-  while (!Serial);  // set up Serial library at 9600 bps
+  while (!Serial); 
   Serial.println("Starting setup");
-
-  //init ir thermometer
   i2c_init(); //Initialise the i2c bus
-  //PORTC = (1 << PORTC4) | (1 << PORTC5);//enable pullups
-
+  PORTC = (1 << PORTC4) | (1 << PORTC5);//enable pullups
   pinMode(button_left, INPUT);
   pinMode(button_right, INPUT);
   loadConfig();
@@ -343,10 +424,7 @@ void setup(){
 
 //================= LOOP =================
 void loop(){
-
-  //store config data
   saveConfig();
-
   Serial.println("");
   Serial.println(" ==================================");
   Serial.println("");
@@ -359,7 +437,6 @@ void loop(){
   Serial.println("5: Settings");
   Serial.println("6: About");
   Serial.println("");
-
   do {
     if (Serial.available() > 0) {
       choose = int(Serial.read())-48;
@@ -368,7 +445,6 @@ void loop(){
       break;
   } 
   while (choose != 1 || choose != 2 || choose != 3 || choose != 4 || choose != 5 || choose != 6 );
-
   switch (choose) {
   case 1:
     check_limit();
@@ -382,7 +458,7 @@ void loop(){
     break;
   case 3:
     Serial.println("please enter position. each digit seperat ");
-    do { // Wenn Daten verfuegbar Zeichen in data schreiben bis 7 Zeichen erreicht oder 10 Sekunden Warten nach dem ersten uebertragenen byte
+    do { // Wenn Daten verfuegbar Zeichen in data schreiben bis 7 Zeichen erreicht oder 3 Sekunden Warten nach dem ersten uebertragenen byte
       if (Serial.available()) {
         data[i] = Serial.read();
         Serial.print(data[i]);
@@ -411,8 +487,3 @@ void loop(){
   choose = 0;  //resetting chooser -> no looping
   motor.release(); 
 }
-
-
-
-
-
