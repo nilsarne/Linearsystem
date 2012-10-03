@@ -1,19 +1,28 @@
+//=========================================================
+// Linearsystem zur Messung von Temperaturprofilen
+// Entstanden im Rahmen einer Bachelorthesis an der
+// Bergischen Universität Wuppertal
+//
+// this program is under public domain!
+// https://github.com/nilsarne/Linearsystem
+//
+// Nils-Arne Pohlandt - 934053
+// Wuppertal, 23. September 2012 
+//=========================================================
+
+//additional libraries
 #include <AFMotor.h>
 #include <i2cmaster.h>
 #include <EEPROM.h>
 
 //================= Variablen =================
 #define MOTORMODE DOUBLE
-
-// ID of the settings block
 #define CONFIG_VERSION "ls5"
-// Tell it where to store your config data in EEPROM
 #define CONFIG_START 32
 
 //================= settings =================
 //settings code via http://arduino.cc/playground/Code/EEPROMLoadAndSaveSettings
 struct StoreStruct {
-  // The variables of your settings
   long position_current;
   long position_left;
   long position_right;
@@ -33,18 +42,20 @@ settings = {
   CONFIG_VERSION
 };
 
+//buttonpins
 int button_left = 2;
 int button_right = 3;
-
+boolean button_left_pressed = false;
+boolean button_right_pressed = false;
 long position_mm = settings.position_current/200*3;
-
-int i;
-int k;
+//counters
+int i,k;
+double j;
+//variables for reading data
 int choose;
-
 char data[8];
 unsigned long Zeit;
-
+//i2c variables
 int dev = 0x5A<<1;
 int data_low = 0;
 int data_high = 0;
@@ -53,11 +64,13 @@ double tempFactor = 0.02; // 0.02 degrees per LSB (measurement resolution of the
 double tempdata = 0x0000;
 int frac;
 
-boolean button_left_pressed = false;
-boolean button_right_pressed = false;
+//================= init motor =================
+AF_Stepper motor(200, 2);
 
+//================= Subprogramme =================
+//EEPROM lesen
 void loadConfig() {
-  if (//EEPROM.read(CONFIG_START + sizeof(settings) - 1) == settings.version_of_program[3] // this is '\0'
+  if (
   EEPROM.read(CONFIG_START + sizeof(settings) - 2) == settings.version_of_program[2] &&
     EEPROM.read(CONFIG_START + sizeof(settings) - 3) == settings.version_of_program[1] &&
     EEPROM.read(CONFIG_START + sizeof(settings) - 4) == settings.version_of_program[0])
@@ -71,6 +84,8 @@ void loadConfig() {
   }
 }
 
+//-------------------------------------------------------------
+//EEPROM schreiben
 void saveConfig() {
   for (unsigned int t=0; t<sizeof(settings); t++)
   { // writes to EEPROM
@@ -78,44 +93,14 @@ void saveConfig() {
     // and verifies the data
     if (EEPROM.read(CONFIG_START + t) != *((char*)&settings + t))
     {
-      // error writing to EEPROM
     }
   }
 }
-
-
-//================= init motor =================
-AF_Stepper motor(200, 2);
-
-//================= Subprogramme =================
-void drive(double x, char dir){
-  double j;
-
-  for(j=1;j<=x;j++){
-    if (check_switches()==true)
-      break;
-    else if(dir == 'l'){
-      motor.step(1, BACKWARD, MOTORMODE );
-      settings.position_current--;
-      position_mm = settings.position_current*0.015;
-    }  
-    else if (dir == 'r'){
-      motor.step(1, FORWARD, MOTORMODE );
-      settings.position_current++;
-      position_mm = settings.position_current*0.015;
-    }
-    else {
-      Serial.println("EROOR - Wrong Direction");
-      break; 
-    }
-  }
-  delay(10);
-}
-
-//---------------------------------------------------------------------------------------
-//Emissionswert senden von Andreas Schules
+//-------------------------------------------------------------
+//Emissionswert senden von Andreas Schultes
+//CRC-Checksum berechnen
 byte calcCRC8(byte command,byte address,byte lsb,byte msb)
-{ //CRC Checksum berechnen
+{
   byte t[4];
   t[0]=command;
   t[1]=address;
@@ -125,12 +110,12 @@ byte calcCRC8(byte command,byte address,byte lsb,byte msb)
   int i,j;
   for(i=0;i<4;i++)
   {
-    remainderPolynomial=remainderPolynomial ^ ((unsigned int)t[i]*0x0100) ;
+    remainderPolynomial=remainderPolynomial^((unsigned int)t[i]*0x0100) ;
     for(j=0;j<8;j++)
     {
       for(int y=0;y<16;y++)
         if(remainderPolynomial&0x8000)
-          remainderPolynomial=(remainderPolynomial*0x02)^0x0700;//0x07 X^2+X^1+1
+          remainderPolynomial=(remainderPolynomial*0x02)^0x0700;
         else
           remainderPolynomial=(remainderPolynomial*0x02);
     }
@@ -139,27 +124,12 @@ byte calcCRC8(byte command,byte address,byte lsb,byte msb)
     return remainderPolynomial>>8;
 }
 
-//-----------------------------
-unsigned int getMLXemission()
-{
-  int dlsb,dmsb,pec;
-  int dev = 0x5A<<1;
-  i2c_init();
-  i2c_start_wait(dev+I2C_WRITE);  // set device address and write mode
-  i2c_write(0x24);                // or command read object or ambient temperature
-  i2c_rep_start(dev+I2C_READ);    // set device address and read mode
-  dlsb = i2c_readAck();       // read data lsb
-  dmsb = i2c_readAck();      // read data msb
-  pec = i2c_readNak();
-  i2c_stop();
-  return dmsb*0x100+dlsb;
-}
-
-//-----------------------------
+//-------------------------------------------------------------
 void setMLXemission(int e)
+//Emissionwert an mlx90614 uebermitteln
+//e = 65535*settings.efaktor
 {
   int dlsb,dmsb,pec;
-  int dev = 0x5A<<1;
   pec=calcCRC8(dev+I2C_WRITE,0x24,0x00,0x00);
   i2c_init();
   i2c_start_wait(dev+I2C_WRITE); 
@@ -182,13 +152,39 @@ void setMLXemission(int e)
   delay(1000);
 }
 
-//---------------------------------------------------------------------------------------
+//-------------------------------------------------------------
+void drive(double x, char dir){
+  //Motor sicher bewegen + Positionsmanagement
+  //void drive(Schritte , Richtung)
+  for(j=1;j<=x;j++){
+    if (check_switches()==true)
+      break;
+    else if(dir == 'l'){
+      motor.step(1, BACKWARD, MOTORMODE );
+      settings.position_current--;
+      position_mm = settings.position_current*0.015;
+    }  
+    else if (dir == 'r'){
+      motor.step(1, FORWARD, MOTORMODE );
+      settings.position_current++;
+      position_mm = settings.position_current*0.015;
+    }
+    else {
+      Serial.println("EROOR - Wrong Direction");
+      break; 
+    }
+  }
+  delay(10);
+}
+
+//-------------------------------------------------------------
 void gotoposition(double x){
+  //fixe Position zwischen den Schaltern anfahren
+  //Position 0 = linker schalter
   if (x > settings.position_right)
     Serial.println("too much movement to the right");
   else if (x < settings.position_left)
     Serial.println("too much movement to the left");
-
   else if((settings.position_current - x)<0){
     Serial.print((settings.position_current - x)*-1);
     Serial.println(" steps moving to the right");
@@ -201,8 +197,9 @@ void gotoposition(double x){
   }
 }
 
-//-----------------------------
+//-------------------------------------------------------------
 boolean check_switches(){
+  //Abfrage ob einer der Schalter gedrueckt wurde
   if (digitalRead(button_left) == HIGH){
     button_left_pressed = true;
     return true;
@@ -218,8 +215,10 @@ boolean check_switches(){
   }
 }
 
-//-----------------------------
+//-------------------------------------------------------------
 void check_limit(){
+  //manuelles Fahren nach links und rechts
+  //wenn Schalter gefunden wurde stoppen und Position merken
   Serial.println("checking limits");
   do {
     motor.step(1, BACKWARD, MOTORMODE );
@@ -242,8 +241,9 @@ void check_limit(){
   Serial.println(" steps");
 }
 
-//-----------------------------
+//-------------------------------------------------------------
 float read_object_temp(){
+  //Auslesen MLX90614 Objekttemperatur
   i2c_start_wait(dev+I2C_WRITE);
   i2c_write(0x07);
   i2c_rep_start(dev+I2C_READ);
@@ -257,24 +257,30 @@ float read_object_temp(){
   return celcius;
 }
 
-//-----------------------------
+//-------------------------------------------------------------
 float read_ambient_temp(){
+  //Auslesen MLX90614 Sensortemperatur
   i2c_start_wait(dev+I2C_WRITE);
   i2c_write(0x06);
   i2c_rep_start(dev+I2C_READ);
-  data_low = i2c_readAck(); //Read 1 byte and then send ack
-  data_high = i2c_readAck(); //Read 1 byte and then send ack
+  data_low = i2c_readAck();
+  data_high = i2c_readAck();
   pec = i2c_readNak();
   i2c_stop();
   tempdata = (double)(((data_high & 0x007F) << 8) + data_low);
-  tempdata = (tempdata * tempFactor)-0.01;  //tempdata to kelvin conversation
-  float celcius = tempdata - 273.15;  // kelvin to celsius
+  tempdata = (tempdata * tempFactor)-0.01;
+  float celcius = tempdata - 273.15;
   return celcius;
 }
-//-----------------------------
+
+//-------------------------------------------------------------
 void measure(){
-  double measure_step = (settings.position_right-2000)/settings.measuresteps; //xx Messungen auf der Strecke 
-  gotoposition(settings.position_right-1000); //1,5cm rechts vom linken schlater - nullpunkt fuer messung
+  //Abfahren der Strecke zwischen den Schaltern
+  //Messen der Temperaturen in definierten Schritten
+  double measure_step = (settings.position_right-2000)/settings.measuresteps;
+  //xx Messungen auf der Strecke 
+  gotoposition(settings.position_right-1000);
+  //1,5cm rechts vom linken schlater - nullpunkt fuer messung
   for(i=1;i<=settings.measuresteps;i++){
     drive(measure_step,'l');
     Serial.print("Messung: "); 
@@ -288,8 +294,9 @@ void measure(){
   }
 }
 
-//-----------------------------
+//-------------------------------------------------------------
 void just_measure(){
+  //Temperaturen messen ohne den Schlitten zu bewegen
   i=1;
   Serial.println("Press '0' for stopping measure.");
   do{
@@ -305,7 +312,7 @@ void just_measure(){
   while (Serial.read()!='0');
 }
 
-//-----------------------------
+//-------------------------------------------------------------
 void about(){
   Serial.println("");
   Serial.println("");
@@ -323,17 +330,22 @@ void about(){
   Serial.println("");
 }
 
-//-----------------------------
+//-------------------------------------------------------------
 void set_settings(){
+  //Einstellen der Parameter
   Serial.println("===== Settings =====");
   Serial.print("1: Set number of measuresteps - ");
   Serial.println(settings.measuresteps);
+  //Anzahl der Messungen
   Serial.print("2: number of repeating measurements - ");
   Serial.println(settings.measure_count);
+  //Anzahl der Wiederholungen an Messungen
   Serial.print("3: emissionsfaktor - ");
   Serial.println(settings.efaktor);
+  //Emissionsfaktor
   Serial.println(" ==================================");
   Serial.println("");
+
   do {
     if (Serial.available() > 0) {
       choose = int(Serial.read())-48;
@@ -343,6 +355,7 @@ void set_settings(){
   } 
   while (choose != 1 || choose != 2 || choose != 3);
   switch (choose) {
+
   case 1:
     Serial.println("measuresteps across lenght: ");
     Serial.println(settings.measuresteps);
@@ -356,11 +369,13 @@ void set_settings(){
       if(i<1)Zeit = millis();
     } 
     while (i<7&&(millis()-Zeit) < 3000);
-    data[i] = 0;  // Abschliessende Null fuer gueltigen String
+    data[i] = 0;
+    // Abschliessende Null fuer gueltigen String
     i=0;
     settings.measuresteps=atof(data);
     Serial.println("");  
     break;
+
   case 2:
     Serial.println("repeating measurements: ");
     Serial.println(settings.measure_count);
@@ -374,24 +389,26 @@ void set_settings(){
       if(i<1)Zeit = millis();
     } 
     while (i<7&&(millis()-Zeit) < 3000);
-    data[i] = 0;  // Abschliessende Null fuer gueltigen String
+    data[i] = 0;
     i=0;
     settings.measure_count=atof(data);
     Serial.println("");
     break;
+
   case 3:
     Serial.println("emissionsfaktor ");
     Serial.println(settings.efaktor);
     Serial.println("Please enter new value: (0.01 - 1.00)");
     do {
       if (Serial.available()) {
+        //      Serial.flush();
         data[i] = Serial.read();
         Serial.print(data[i]);
         i++;
       }    
       if(i<1)Zeit = millis();
     } 
-    while (i<7&&(millis()-Zeit) < 3000);
+    while (i<7&&(millis()-Zeit) < 5000);
     data[i] = 0;
     i=0;
     settings.efaktor=atof(data);
@@ -406,7 +423,7 @@ void setup(){
   Serial.begin(9600); 
   while (!Serial); 
   Serial.println("Starting setup");
-  i2c_init(); //Initialise the i2c bus
+  i2c_init(); //Initialise i2c bus
   PORTC = (1 << PORTC4) | (1 << PORTC5);//enable pullups
   pinMode(button_left, INPUT);
   pinMode(button_right, INPUT);
@@ -419,12 +436,11 @@ void setup(){
   Serial.println("setup completed");
   delay(100);
   Serial.println("");
-  about;
+  about();
 }
 
 //================= LOOP =================
 void loop(){
-  saveConfig();
   Serial.println("");
   Serial.println(" ==================================");
   Serial.println("");
@@ -458,7 +474,7 @@ void loop(){
     break;
   case 3:
     Serial.println("please enter position. each digit seperat ");
-    do { // Wenn Daten verfuegbar Zeichen in data schreiben bis 7 Zeichen erreicht oder 3 Sekunden Warten nach dem ersten uebertragenen byte
+    do { 
       if (Serial.available()) {
         data[i] = Serial.read();
         Serial.print(data[i]);
@@ -467,7 +483,7 @@ void loop(){
       if(i<1)Zeit = millis();
     } 
     while (i<7&&(millis()-Zeit) < 3000);
-    data[i] = 0;  // Abschliessende Null fuer gueltigen String
+    data[i] = 0;
     i=0;
     Serial.println("");  
     gotoposition(atof(data));
@@ -484,6 +500,9 @@ void loop(){
   default:
     break;
   }
-  choose = 0;  //resetting chooser -> no looping
-  motor.release(); 
+  choose = 0;
+  //resetting chooser -> no looping
+  saveConfig();
+  motor.release();
 }
+
