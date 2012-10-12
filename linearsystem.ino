@@ -1,7 +1,7 @@
 //=========================================================
 // Linearsystem zur Messung von Temperaturprofilen
 // Entstanden im Rahmen einer Bachelorthesis an der
-// Bergischen Universität Wuppertal
+// Bergischen Universitaet Wuppertal
 //
 // this program is under public domain!
 // https://github.com/nilsarne/Linearsystem
@@ -47,7 +47,7 @@ int button_left = 2;
 int button_right = 3;
 boolean button_left_pressed = false;
 boolean button_right_pressed = false;
-long position_mm = settings.position_current/200*3;
+long position_mm = settings.position_current*0.015;
 //counters
 int i,k;
 double j;
@@ -68,6 +68,9 @@ int frac;
 AF_Stepper motor(200, 2);
 
 //================= Subprogramme =================
+/* LoadAndSaveSettings
+ * Thijs Elenbaas
+ */
 //EEPROM lesen
 void loadConfig() {
   if (
